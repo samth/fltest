@@ -1,7 +1,7 @@
 #lang racket
 
 (require math/bigfloat racket/flonum
-         math/flonum
+         math/flonum math/base
          math/private/flonum/flonum-functions
          math/private/utils/flonum-tests
          math/private/flonum/flonum-bits
@@ -16,15 +16,11 @@
   (cond [(zero? x.0)  x2]
         [else  (fl2->real x2 x1)]))
 
-(require math/private/flonum/expansion/expansion-base)
-
 (define (bigfloat->real* x)
   (define x.0 (bigfloat->flonum x))
   (cond [(fl= x.0 0.0)  x.0]
         [(flrational? x.0)  (bigfloat->real x)]
         [else  x.0]))
-
-
 
 (define (fl2-error x2 x1 x)
   (cond [(not (fl2? x2 x1))  (list 'not-fl2? x2 x1)]
@@ -36,22 +32,6 @@
       (and (eqv? x 0.0) (eqv? y -0.0))))
 
 
-(define (fl2ulp x2 x1)
-  (cond [(fl= x2 0.0)  0.0]
-        [else  (flmax +min.0 (fl* (flulp x2) epsilon.0))]))
-
-(define (fl2ulp-error x2 x1 r)
-  (define x (fl2->real x2 x1))
-  (define-values (r2 r1) (fl2 r))
-  (cond [(eqv? x r)  0.0]
-        [(and (fl= x2 0.0) (fl= r2 0.0))  0.0]
-        [(and (fl= x2 +inf.0) (fl= r2 +inf.0))  0.0]
-        [(and (fl= x2 -inf.0) (fl= r2 -inf.0))  0.0]
-        [(zero? r)  +inf.0]
-        [(and (rational? x) (flrational? r2))
-         (flabs (fl (/ (- (inexact->exact x) (inexact->exact r))
-                       (inexact->exact (flmax +min.0 (fl2ulp r2 r1))))))]
-        [else  +inf.0]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -71,6 +51,7 @@
                     'flexpt  'bfexpt
                     'flexp/error 'bfexp
                     'fl2+    'bf+
+                    'fl2- 'bf-
                     'fl2expm1 'bfexpm1
                     'fl2exp 'bfexp))
 
@@ -86,8 +67,10 @@
 
 (define (calculate-error er e*r)
   (if (list? er)
-      (fl2ulp-error (car er) (cadr er) e*r)
-      (flulp-error er e*r)))
+      (values (fl2ulp-error (car er) (cadr er) e*r)
+              (relative-error (fl2->real* (car er) (cadr er)) e*r))
+      (values (flulp-error er e*r)
+              (relative-error er e*r))))
 
 (define (fl2-op? op) (memq op '(fl2+ fl2- fl2exp fl2expm1)))
 
@@ -116,9 +99,26 @@
        (printf "~a => ~a\n"
                e*s
                (~r (bigfloat->real* e*r) #:precision 30 #:notation 'exponential))
-       (printf "error is ~s ulps with precision ~s\n"
-               (calculate-error er (bigfloat->real* e*r))
-               prec)])))
+       (define-values (u rel) (calculate-error er (bigfloat->real* e*r)))
+       (printf "error is ~s ulps (relative error ~a) with precision ~s\n"
+                 u (~r rel #:precision 20 #:notation 'exponential) prec)
+       
+       (when (fl2-op? op)
+         (define float-args 
+           (let loop ([args args])
+             (if (null? args)
+                 null
+                 (cons (real->double-flonum (fl2->real* (car args) (cadr args)))
+                       (loop (cddr args))))))
+         (define fl-op (string->symbol (regexp-replace "fl2" (symbol->string op) "fl")))
+         (define fl-r (eval (cons fl-op float-args)))
+         (printf "~a => ~a\n"
+               (~s (cons fl-op float-args) #:min-width (string-length e*s))
+               (print-result er))
+         (define-values (u rel) (calculate-error fl-r (bigfloat->real* e*r)))
+         (printf "error when just using floats is ~s ulps (relative error ~a) with precision ~s\n"
+                 u (~r rel #:precision 20 #:notation 'exponential) prec))
+         ])))
 
 
 
@@ -157,3 +157,30 @@
 (check '(fl2exp 251.859482911721 -1.155927414698983e-15))
 (check '(fl2expm1 250.7410332680273 7.911227779561349e-15))
 (check '(fl2expm1 253.64381400953715 1.2889509632926353e-14))
+
+(for-each check
+          '((fl2exp -253.05572964092207 -1.0193188793199029e-14)
+            (fl2exp 247.08132868092463 -1.5500899213440343e-15)
+            (fl2exp -311.0076112768378 -2.7337259662912242e-14)
+            (fl2exp 313.1384665707421 2.1663247373169328e-14)
+            (fl2expm1 251.98158723821487 1.2401437093586863e-14)
+            (fl2expm1 250.8615080956815 -1.0435131192152885e-14)
+            (fl2expm1 246.7336289130019 -1.224197841001902e-14)
+            (fl2-
+             -6.307625868783824e-189
+             -7.650829856531877e-206
+             -6.221347182541859e-189
+             3.486864837367133e-205)
+            (flexp/error -254.01518882090863)
+            (flexp/error -251.95368322256186)
+            (flexp/error -247.49730066045996)
+            (flexp/error -306.356486488304)
+            (flexp/error -247.29245235328085)
+            (flexp/error -251.78502645604777)
+            (flexp/error 249.18165493994528)
+            (fl2exp 249.9020736185187 6.819710735232684e-15)
+            (fl2exp 250.21789972727245 -8.899092268237878e-15)
+            (fl2exp -311.9319594801789 -2.483683117656448e-14)
+            (fl2expm1 253.6199382443308 1.0330029387260226e-14)
+            (fl2expm1 251.75275370712401 -7.792688668380012e-15)))
+
