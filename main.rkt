@@ -38,6 +38,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
+(define js-rewrites
+  (hash "expt" "pow"))
+
 (define ns (make-base-namespace))
 (parameterize ([current-namespace ns])
   (namespace-require 'racket/flonum)
@@ -101,23 +104,48 @@
 
 
 (define (show v r max-len)
-  (printf "~a => ~a\n" (~s v #:min-width max-len) (print-result r)))
+  (printf "~a => ~a\n" (~a v #:min-width max-len) (print-result r)))
 
 
-(define (run test correct prec #:ok? [ok? (lambda (u r a) #f #;(<= u 0.5))] [extra #f] [extra-message ""])
+(define (->js-expr expr)
+  (match-define (list op args ...) expr)
+  (define js-op-maybe (substring (symbol->string (->fl-op op)) 2))
+  (define js-op (hash-ref js-rewrites js-op-maybe (lambda () js-op-maybe)))
+  (format "Math.~a(~a)"
+          js-op
+          (apply ~a (add-between args ","))))
+
+(define (run-js expr)
+  (define s (open-output-string))
+  ;(eprintf "nodejs -e \"console.log(~a)\"\n" expr)
+  (define proc (parameterize ([current-output-port s])
+                 (system (format "nodejs -e \"console.log((~a).toPrecision(30))\"" expr))))
+  (define result (get-output-string s))
+  ;(eprintf "result : ~s\n" result)
+  (read (open-input-string result)))
+
+
+(define (run test correct  js-expr prec #:ok? [ok? (lambda (u r a) #f #;(<= u 0.5))] [extra #f] [extra-message ""])
   (parameterize ([current-namespace ns])
     (define test-r (eval/values test))
     (define correct-r (eval/values correct))
     (define extra-r (and extra (eval/values extra)))
-    (define max-len (apply max (map (compose string-length ~s) (list test-r correct extra))))
+    (define max-len (apply max (map (compose string-length ~s) (list test-r correct extra js-expr))))
     (define-values (u rel abs) (calculate-error test-r correct-r))
-    (unless (ok? u rel abs)
+    (define exact? (eqv? 0 u))
+    (define js (and js-expr (run-js js-expr)))
+    (define-values (js-u js-rel js-abs) (if js (calculate-error test-r js) (values +inf.0 #f #f)))
+    (unless (or (ok? u rel abs) (< js-u u))
       (newline)
       (show test test-r max-len)
       (show correct correct-r max-len)
+      (when js-expr ;(< js-u u)
+        (show js-expr js max-len))
       (when extra
         (show extra extra-r max-len))
       (show-error u rel abs prec)
+      (when js-expr
+        (show-error js-u js-rel js-abs prec #:extra " when using js"))
       (when extra
         (define-values (u rel abs) (calculate-error extra-r correct-r))
         (show-error u rel abs prec #:extra extra-message)))))
@@ -129,9 +157,11 @@
     (match e
       [(list op args ...)
        (define e* (->bf-expr op args))
+       (define fl-expr (->fl-expr op args))
+       (define js-expr (and (not (fl2-op? op)) (->js-expr fl-expr)))
        (if (or (fl/error-op? op) (fl2-op? op))
-           (run e e* prec (->fl-expr op args) " when just using floats")
-           (run e e* prec))])))
+           (run e e* js-expr prec fl-expr " when just using floats")
+           (run e e* js-expr prec))])))
 
 
 
@@ -181,6 +211,11 @@
                -7.650829856531877e-206
                -6.221347182541859e-189
                3.486864837367133e-205)
+              (fl2+
+                  5.754365118051034e+54
+                  2.8307141643929314e+38
+                  -5.753780528274009e+54
+                  1.6423048070836051e+38)
               (flexp/error -254.01518882090863)
               (flexp/error -251.95368322256186)
               (flexp/error -247.49730066045996)
@@ -198,15 +233,6 @@
   (match-define (list r _ ...) (port->list read (open-input-string s)))
   (check r)
   (apply run-js r))
-
-(define (run-js op . args)
-  (define s (open-output-string))
-  (parameterize ([current-output-port s])
-    (define js-op (substring (symbol->string (->fl-op op)) 2))
-    (system (format "nodejs -e \"console.log(Math.~a(~a))\""
-                    js-op
-                    (apply ~s (add-between args ",")))))
-  (printf "js => ~a\n" (print-result (read (open-input-string (get-output-string s))))))
 
 (module+ main
   (require racket/cmdline syntax/location)
